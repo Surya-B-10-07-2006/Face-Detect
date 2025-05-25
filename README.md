@@ -20,7 +20,7 @@ A Python application that detects facial emotions in real-time using your webcam
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/Surya-B-10-07-2006/Face-Detect.git
+git clone https://github.com/Surya-B/Face-Detect.git
 cd Face-Detect
 ```
 
