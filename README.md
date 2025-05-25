@@ -1,4 +1,4 @@
-# Face Emotion Detection with Music Player
+# Face-Detect
 
 A Python application that detects facial emotions in real-time using your webcam and plays corresponding songs based on the detected emotion.
 
@@ -20,8 +20,8 @@ A Python application that detects facial emotions in real-time using your webcam
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/face-deduct.git
-cd face-deduct
+git clone https://github.com/Surya-B-10-07-2006/Face-Detect.git
+cd Face-Detect
 ```
 
 2. Create and activate a virtual environment:
