@@ -8,351 +8,594 @@ import vlc
 import glob
 import threading
 from PIL import Image, ImageTk
+import sys
+import json
+from datetime import datetime
+import random
+import platform
 
-class FaceDetector:
+class FaceEmotionDetection:
     def __init__(self):
-        # Initialize video capture
-        self.cap = cv2.VideoCapture(0)
-        
-        # Initialize VLC instance
-        self.vlc_instance = vlc.Instance()
-        self.player = self.vlc_instance.media_player_new()
+        # Initialize VLC instance with verbose logging
+        self.instance = vlc.Instance('--verbose 2')
+        self.player = self.instance.media_player_new()
         
         # Create main window
         self.root = tk.Tk()
         self.root.title("Face Emotion Detection")
-        self.root.geometry("1280x720")  # 16:9 aspect ratio
+        self.root.geometry("1280x720")
+        self.root.configure(bg='#1a1a1a')
+        
+        # Load CSS styles
+        self.load_styles()
         
         # Create main frame
-        self.main_frame = ttk.Frame(self.root)
-        self.main_frame.pack(fill=tk.BOTH, expand=True)
+        self.main_frame = tk.Frame(self.root, bg='#2d2d2d')
+        self.main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
         
-        # Create left panel for webcam
-        self.left_panel = ttk.Frame(self.main_frame)
-        self.left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # Create left and right panels
+        self.left_panel = tk.Frame(self.main_frame, bg='#2d2d2d')
+        self.left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10)
         
-        # Create webcam canvas with fixed size
-        self.webcam_canvas = tk.Canvas(self.left_panel, width=640, height=480)
+        self.right_panel = tk.Frame(self.main_frame, bg='#2d2d2d')
+        self.right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10)
+        
+        # Create webcam canvas
+        self.webcam_canvas = tk.Canvas(self.left_panel, width=640, height=480, bg='black')
         self.webcam_canvas.pack(pady=10)
         
-        # Create control buttons
-        self.create_control_buttons()
+        # Create VLC player canvas
+        self.player_canvas = tk.Canvas(self.right_panel, width=640, height=480, bg='black')
+        self.player_canvas.pack(pady=10)
         
-        # Create right panel for VLC player
-        self.right_panel = ttk.Frame(self.main_frame)
-        self.right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        # Create VLC player frame
-        self.player_frame = ttk.Frame(self.right_panel)
-        self.player_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Create VLC player canvas with same size as webcam
-        self.player_canvas = tk.Canvas(self.player_frame, width=640, height=480, bg='black')
-        self.player_canvas.pack(fill=tk.BOTH, expand=True)
+        # Create control buttons frame
+        self.control_frame = tk.Frame(self.left_panel, bg='#2d2d2d')
+        self.control_frame.pack(pady=10)
         
         # Create media control buttons frame
-        self.media_control_frame = ttk.Frame(self.right_panel)
+        self.media_control_frame = tk.Frame(self.right_panel, bg='#2d2d2d')
         self.media_control_frame.pack(pady=10)
         
-        # Create media control buttons
-        self.create_media_control_buttons()
+        # Create buttons with tooltips
+        self.create_control_buttons()
+        self.create_media_buttons()
         
-        # Set VLC player window
-        if os.name == 'nt':  # Windows
-            self.player.set_hwnd(self.player_canvas.winfo_id())
-        else:  # Linux/Mac
-            self.player.set_xwindow(self.player_canvas.winfo_id())
+        # Create status labels
+        self.status_label = tk.Label(self.left_panel, text="Status: Ready", bg='#2d2d2d', fg='white')
+        self.status_label.pack(pady=5)
         
-        # Load face detection cascade
-        cascade_path = cv2.data.haarcascades
-        self.face_cascade = cv2.CascadeClassifier(os.path.join(cascade_path, 'haarcascade_frontalface_default.xml'))
-        self.eye_cascade = cv2.CascadeClassifier(os.path.join(cascade_path, 'haarcascade_eye.xml'))
-        self.smile_cascade = cv2.CascadeClassifier(os.path.join(cascade_path, 'haarcascade_smile.xml'))
+        self.emotion_label = tk.Label(self.left_panel, text="Emotion: None", bg='#2d2d2d', fg='white')
+        self.emotion_label.pack(pady=5)
         
-        # Define colors for emotions
-        self.emotion_colors = {
-            'happy': (0, 255, 255),    # Yellow
-            'sad': (255, 0, 0),        # Blue
-            'angry': (0, 0, 255),      # Red
-            'surprise': (0, 165, 255), # Orange
-            'neutral': (255, 255, 255) # White
-        }
-
-        # Video paths for each emotion
-        self.emotion_videos = {
-            'happy': self.get_video_list('happy'),
-            'sad': self.get_video_list('sad'),
-            'neutral': self.get_video_list('neutral'),
-            'angry': self.get_video_list('angry'),
-            'surprise': self.get_video_list('surprise')
-        }
-        
-        # Video player state
-        self.current_video_index = 0
-        self.is_playing = False
-        self.current_emotion_videos = []
-        self.current_video = None
+        # Initialize variables
         self.is_detecting = False
         self.current_emotion = None
-        self.emotion_confidence = 0.0
-
+        self.video_list = {}
+        self.current_video_index = 0
+        self.is_playing = False
+        self.is_muted = False
+        self.volume = 100
+        
+        # Emotion detection variables
+        self.emotion_buffer = []  # Buffer to store recent emotions
+        self.buffer_size = 10     # Number of emotions to store
+        self.last_emotion_change = time.time()  # Time of last emotion change
+        self.emotion_change_delay = 2.0  # Minimum seconds between emotion changes
+        self.emotion_confidence = {}  # Store confidence for each emotion
+        
+        # Load emotion videos
+        self.load_emotion_videos()
+        
+        # Set up mouse callback
+        self.webcam_canvas.bind("<Button-1>", self.mouse_callback)
+        
+        # Initialize webcam
+        self.cap = cv2.VideoCapture(0)
+        if not self.cap.isOpened():
+            self.show_error("Error: Could not open webcam")
+            return
+        
+        # Load face detection model
+        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        
+        # Start webcam update
+        self.update_webcam()
+        
+    def load_styles(self):
+        """Load CSS styles from file"""
+        try:
+            with open('styles.css', 'r') as f:
+                self.styles = f.read()
+        except FileNotFoundError:
+            self.show_error("Error: styles.css file not found")
+            self.styles = ""
+    
     def create_control_buttons(self):
-        # Create button frame
-        button_frame = ttk.Frame(self.left_panel)
-        button_frame.pack(pady=10)
+        """Create control buttons with tooltips"""
+        # Start Detection button
+        self.start_button = tk.Button(
+            self.control_frame,
+            text="Start Detection",
+            command=self.start_detection,
+            bg='#2ecc71',
+            fg='white',
+            relief=tk.FLAT,
+            padx=10,
+            pady=5
+        )
+        self.start_button.pack(side=tk.LEFT, padx=5)
+        self.create_tooltip(self.start_button, "Start face detection")
         
-        # Create buttons with consistent width
-        button_width = 15  # Width in characters
+        # Stop Detection button
+        self.stop_button = tk.Button(
+            self.control_frame,
+            text="Stop Detection",
+            command=self.stop_detection,
+            bg='#e74c3c',
+            fg='white',
+            relief=tk.FLAT,
+            padx=10,
+            pady=5,
+            state=tk.DISABLED
+        )
+        self.stop_button.pack(side=tk.LEFT, padx=5)
+        self.create_tooltip(self.stop_button, "Stop face detection")
         
-        self.start_button = ttk.Button(button_frame, text="Start Detection", width=button_width, command=self.start_detection)
-        self.start_button.pack(pady=5)
-        
-        self.stop_button = ttk.Button(button_frame, text="Stop Detection", width=button_width, command=self.stop_detection)
-        self.stop_button.pack(pady=5)
-        
-        self.capture_button = ttk.Button(button_frame, text="Capture & Play", width=button_width, command=self.capture_and_play)
-        self.capture_button.pack(pady=5)
-        
-        self.next_button = ttk.Button(button_frame, text="Next Video", width=button_width, command=self.next_video)
-        self.next_button.pack(pady=5)
-        
-        self.prev_button = ttk.Button(button_frame, text="Previous Video", width=button_width, command=self.prev_video)
-        self.prev_button.pack(pady=5)
-
-    def create_media_control_buttons(self):
-        """Create media control buttons for VLC player"""
-        # Create button frame
-        button_frame = ttk.Frame(self.media_control_frame)
-        button_frame.pack(pady=5)
-        
-        # Create buttons with consistent width
-        button_width = 8  # Width in characters
-        
+        # Capture & Play button
+        self.capture_button = tk.Button(
+            self.control_frame,
+            text="Capture & Play",
+            command=self.capture_and_play,
+            bg='#f1c40f',
+            fg='white',
+            relief=tk.FLAT,
+            padx=10,
+            pady=5,
+            state=tk.DISABLED
+        )
+        self.capture_button.pack(side=tk.LEFT, padx=5)
+        self.create_tooltip(self.capture_button, "Capture current emotion and play video")
+    
+    def create_media_buttons(self):
+        """Create media control buttons with tooltips"""
         # Play/Pause button
-        self.play_pause_button = ttk.Button(button_frame, text="⏯️ Play", width=button_width, command=self.toggle_play_pause)
-        self.play_pause_button.pack(side=tk.LEFT, padx=5)
+        self.play_button = tk.Button(
+            self.media_control_frame,
+            text="⏯️",
+            command=self.toggle_play_pause,
+            bg='#3498db',
+            fg='white',
+            relief=tk.FLAT,
+            width=3,
+            height=1
+        )
+        self.play_button.pack(side=tk.LEFT, padx=5)
+        self.create_tooltip(self.play_button, "Play/Pause")
         
-        # Volume control buttons
-        self.volume_down_button = ttk.Button(button_frame, text="🔈 -", width=button_width, command=self.decrease_volume)
-        self.volume_down_button.pack(side=tk.LEFT, padx=5)
+        # Previous button
+        self.prev_button = tk.Button(
+            self.media_control_frame,
+            text="⏮️",
+            command=self.prev_video,
+            bg='#3498db',
+            fg='white',
+            relief=tk.FLAT,
+            width=3,
+            height=1
+        )
+        self.prev_button.pack(side=tk.LEFT, padx=5)
+        self.create_tooltip(self.prev_button, "Previous Video")
         
-        self.volume_up_button = ttk.Button(button_frame, text="🔊 +", width=button_width, command=self.increase_volume)
+        # Next button
+        self.next_button = tk.Button(
+            self.media_control_frame,
+            text="⏭️",
+            command=self.next_video,
+            bg='#3498db',
+            fg='white',
+            relief=tk.FLAT,
+            width=3,
+            height=1
+        )
+        self.next_button.pack(side=tk.LEFT, padx=5)
+        self.create_tooltip(self.next_button, "Next Video")
+        
+        # Volume up button
+        self.volume_up_button = tk.Button(
+            self.media_control_frame,
+            text="🔊",
+            command=self.volume_up,
+            bg='#9b59b6',
+            fg='white',
+            relief=tk.FLAT,
+            width=3,
+            height=1
+        )
         self.volume_up_button.pack(side=tk.LEFT, padx=5)
+        self.create_tooltip(self.volume_up_button, "Increase Volume")
+        
+        # Volume down button
+        self.volume_down_button = tk.Button(
+            self.media_control_frame,
+            text="🔉",
+            command=self.volume_down,
+            bg='#9b59b6',
+            fg='white',
+            relief=tk.FLAT,
+            width=3,
+            height=1
+        )
+        self.volume_down_button.pack(side=tk.LEFT, padx=5)
+        self.create_tooltip(self.volume_down_button, "Decrease Volume")
         
         # Mute button
-        self.mute_button = ttk.Button(button_frame, text="🔇 Mute", width=button_width, command=self.toggle_mute)
+        self.mute_button = tk.Button(
+            self.media_control_frame,
+            text="🔇",
+            command=self.toggle_mute,
+            bg='#e67e22',
+            fg='white',
+            relief=tk.FLAT,
+            width=3,
+            height=1
+        )
         self.mute_button.pack(side=tk.LEFT, padx=5)
+        self.create_tooltip(self.mute_button, "Mute/Unmute")
         
         # Stop button
-        self.stop_button = ttk.Button(button_frame, text="⏹️ Stop", width=button_width, command=self.stop_video)
-        self.stop_button.pack(side=tk.LEFT, padx=5)
-
+        self.stop_media_button = tk.Button(
+            self.media_control_frame,
+            text="⏹️",
+            command=self.stop_video,
+            bg='#e74c3c',
+            fg='white',
+            relief=tk.FLAT,
+            width=3,
+            height=1
+        )
+        self.stop_media_button.pack(side=tk.LEFT, padx=5)
+        self.create_tooltip(self.stop_media_button, "Stop Video")
+    
+    def create_tooltip(self, widget, text):
+        """Create a tooltip for a widget"""
+        def show_tooltip(event):
+            tooltip = tk.Toplevel()
+            tooltip.wm_overrideredirect(True)
+            tooltip.wm_geometry(f"+{event.x_root+10}+{event.y_root+10}")
+            
+            label = tk.Label(
+                tooltip,
+                text=text,
+                bg='#333',
+                fg='white',
+                relief=tk.SOLID,
+                borderwidth=1,
+                padx=5,
+                pady=2
+            )
+            label.pack()
+            
+            def hide_tooltip():
+                tooltip.destroy()
+            
+            widget.tooltip = tooltip
+            widget.bind('<Leave>', lambda e: hide_tooltip())
+        
+        widget.bind('<Enter>', show_tooltip)
+    
+    def show_error(self, message):
+        """Show error message"""
+        error_label = tk.Label(
+            self.root,
+            text=message,
+            fg='#e74c3c',
+            bg='rgba(231, 76, 60, 0.1)',
+            padx=10,
+            pady=5,
+            relief=tk.SOLID,
+            borderwidth=1
+        )
+        error_label.pack(pady=10)
+        self.root.after(3000, error_label.destroy)
+    
+    def show_success(self, message):
+        """Show success message"""
+        success_label = tk.Label(
+            self.root,
+            text=message,
+            fg='#2ecc71',
+            bg='rgba(46, 204, 113, 0.1)',
+            padx=10,
+            pady=5,
+            relief=tk.SOLID,
+            borderwidth=1
+        )
+        success_label.pack(pady=10)
+        self.root.after(3000, success_label.destroy)
+    
+    def update_webcam(self):
+        """Update webcam feed"""
+        if self.cap.isOpened():
+            ret, frame = self.cap.read()
+            if ret:
+                if self.is_detecting:
+                    # If detecting, let detect_emotion handle the frame display
+                    self.detect_emotion(frame)
+                else:
+                    # If not detecting, just display the frame
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    
+                    # Resize frame to fit canvas
+                    canvas_width = self.webcam_canvas.winfo_width()
+                    canvas_height = self.webcam_canvas.winfo_height()
+                    if canvas_width > 1 and canvas_height > 1:
+                        frame_rgb = cv2.resize(frame_rgb, (canvas_width, canvas_height))
+                    
+                    # Convert to PhotoImage
+                    self.photo = ImageTk.PhotoImage(image=Image.fromarray(frame_rgb))
+                    
+                    # Update canvas
+                    self.webcam_canvas.create_image(0, 0, image=self.photo, anchor=tk.NW)
+        
+        # Schedule next update
+        self.root.after(10, self.update_webcam)
+    
+    def detect_emotion(self, frame):
+        """Detect emotion in the frame with smoothing and stability"""
+        # Convert to grayscale
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # Detect faces
+        faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
+        
+        for (x, y, w, h) in faces:
+            # Draw rectangle around face
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+            
+            # Get face ROI
+            face_roi = gray[y:y+h, x:x+w]
+            
+            # Get current emotion with confidence
+            current_time = time.time()
+            new_emotion = self.get_emotion_with_confidence(face_roi)
+            
+            # Add to buffer
+            self.emotion_buffer.append(new_emotion)
+            if len(self.emotion_buffer) > self.buffer_size:
+                self.emotion_buffer.pop(0)
+            
+            # Only update emotion if enough time has passed
+            if current_time - self.last_emotion_change >= self.emotion_change_delay:
+                # Get most common emotion from buffer
+                if self.emotion_buffer:
+                    emotion_counts = {}
+                    for emotion, _ in self.emotion_buffer:
+                        emotion_counts[emotion] = emotion_counts.get(emotion, 0) + 1
+                    
+                    most_common_emotion = max(emotion_counts.items(), key=lambda x: x[1])[0]
+                    
+                    # Only update if emotion has changed
+                    if most_common_emotion != self.current_emotion:
+                        self.current_emotion = most_common_emotion
+                        self.last_emotion_change = current_time
+                        self.emotion_label.config(text=f"Emotion: {self.current_emotion}")
+                        self.capture_button.config(state=tk.NORMAL)
+            
+            # Add emotion text above the face box
+            emotion_text = f"Emotion: {self.current_emotion if self.current_emotion else 'Detecting...'}"
+            cv2.putText(frame, emotion_text, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+            # Convert frame to RGB for display
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Resize frame to fit canvas
+            canvas_width = self.webcam_canvas.winfo_width()
+            canvas_height = self.webcam_canvas.winfo_height()
+            if canvas_width > 1 and canvas_height > 1:
+                frame_rgb = cv2.resize(frame_rgb, (canvas_width, canvas_height))
+            
+            # Convert to PhotoImage and update canvas
+            self.photo = ImageTk.PhotoImage(image=Image.fromarray(frame_rgb))
+            self.webcam_canvas.create_image(0, 0, image=self.photo, anchor=tk.NW)
+    
+    def get_emotion_with_confidence(self, face_roi):
+        """Get emotion with confidence score using facial features"""
+        # Initialize emotion scores
+        emotions = {
+            'happy': 0.0,
+            'sad': 0.0,
+            'angry': 0.0,
+            'neutral': 0.0
+        }
+        
+        # Analyze facial features (simplified version)
+        # In a real application, you would use a proper emotion detection model
+        
+        # Get face dimensions
+        height, width = face_roi.shape
+        
+        # Analyze mouth region (bottom third of face)
+        mouth_region = face_roi[int(height*0.6):height, :]
+        mouth_edges = cv2.Canny(mouth_region, 100, 200)
+        mouth_curvature = np.sum(mouth_edges) / (width * height * 0.4)
+        
+        # Analyze eye regions (top third of face)
+        eye_region = face_roi[:int(height*0.3), :]
+        eye_edges = cv2.Canny(eye_region, 100, 200)
+        eye_intensity = np.sum(eye_edges) / (width * height * 0.3)
+        
+        # Update emotion scores based on features
+        if mouth_curvature > 0.5:
+            emotions['happy'] = 0.8
+            emotions['neutral'] = 0.2
+        elif mouth_curvature < 0.2:
+            emotions['sad'] = 0.8
+            emotions['neutral'] = 0.2
+        elif eye_intensity > 0.6:
+            emotions['angry'] = 0.8
+            emotions['neutral'] = 0.2
+        else:
+            emotions['neutral'] = 0.9
+            emotions['happy'] = 0.1
+        
+        # Get emotion with highest confidence
+        max_emotion = max(emotions.items(), key=lambda x: x[1])
+        return max_emotion
+    
+    def start_detection(self):
+        """Start face detection"""
+        self.is_detecting = True
+        self.start_button.config(state=tk.DISABLED)
+        self.stop_button.config(state=tk.NORMAL)
+        self.status_label.config(text="Status: Detecting")
+        self.show_success("Face detection started")
+    
+    def stop_detection(self):
+        """Stop face detection"""
+        self.is_detecting = False
+        self.start_button.config(state=tk.NORMAL)
+        self.stop_button.config(state=tk.DISABLED)
+        self.capture_button.config(state=tk.DISABLED)
+        self.status_label.config(text="Status: Stopped")
+        self.emotion_label.config(text="Emotion: None")
+        self.show_success("Face detection stopped")
+    
+    def capture_and_play(self):
+        """Capture current emotion and play video"""
+        if self.current_emotion:
+            self.play_emotion_video(self.current_emotion)
+            self.show_success(f"Playing {self.current_emotion} video")
+    
+    def load_emotion_videos(self):
+        """Load videos for each emotion"""
+        emotions = ['happy', 'sad', 'angry', 'neutral']
+        for emotion in emotions:
+            self.video_list[emotion] = self.get_video_list(emotion)
+    
     def get_video_list(self, emotion):
         """Get list of videos for an emotion"""
         video_dir = os.path.join('songs', emotion)
-        if os.path.exists(video_dir):
-            videos = glob.glob(os.path.join(video_dir, '*.mp4'))
-            return videos
-        return []
-
-    def start_detection(self):
-        self.is_detecting = True
-        self.update_webcam()
-
-    def stop_detection(self):
-        self.is_detecting = False
-
-    def capture_and_play(self):
-        if self.is_detecting and self.current_emotion:
-            self.play_emotion_video(self.current_emotion)
-
+        if not os.path.exists(video_dir):
+            os.makedirs(video_dir)
+            return []
+        
+        videos = [f for f in os.listdir(video_dir) if f.endswith(('.mp4', '.avi', '.mkv'))]
+        return [os.path.join(video_dir, v) for v in videos]
+    
     def play_emotion_video(self, emotion):
-        """Play the video associated with the detected emotion"""
-        self.emotion_videos[emotion] = self.get_video_list(emotion)
-        if emotion in self.emotion_videos and self.emotion_videos[emotion]:
-            self.current_emotion_videos = self.emotion_videos[emotion]
+        """Play a video for the given emotion"""
+        if emotion in self.video_list and self.video_list[emotion]:
             self.current_video_index = 0
-            return self.play_current_video()
-        return False
-
+            self.play_current_video()
+        else:
+            self.show_error(f"No videos found for {emotion} emotion")
+    
     def play_current_video(self):
         """Play the current video"""
-        if self.current_emotion_videos:
-            try:
-                video_path = self.current_emotion_videos[self.current_video_index]
-                media = self.vlc_instance.media_new(video_path)
-                self.player.set_media(media)
-                self.player.play()
-                self.is_playing = True
-                self.current_video = os.path.basename(video_path)
-                self.play_pause_button.configure(text="⏯️ Pause")
-                return True
-            except Exception as e:
-                print(f"Error playing video: {str(e)}")
-                self.is_playing = False
-                self.current_video = None
-        return False
-
-    def next_video(self):
-        """Play next video in the list"""
-        if self.current_emotion_videos:
-            self.player.stop()
-            self.current_video_index = (self.current_video_index + 1) % len(self.current_emotion_videos)
-            return self.play_current_video()
-        return False
-
-    def prev_video(self):
-        """Play previous video in the list"""
-        if self.current_emotion_videos:
-            self.player.stop()
-            self.current_video_index = (self.current_video_index - 1) % len(self.current_emotion_videos)
-            return self.play_current_video()
-        return False
-
-    def update_webcam(self):
-        """Update webcam feed"""
-        if self.is_detecting:
-            ret, frame = self.cap.read()
-            if ret:
-                # Resize frame to match canvas size
-                frame = cv2.resize(frame, (640, 480))
-                
-                # Convert frame to RGB
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
-                # Detect faces and emotions
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
-                
-                if len(faces) > 0:
-                    x, y, w, h = faces[0]
-                    face_roi = frame[y:y+h, x:x+w]
-                    emotions = self.detect_emotion(face_roi)
-                    sorted_emotions = sorted(emotions.items(), key=lambda item: item[1], reverse=True)
-                    self.current_emotion, self.emotion_confidence = sorted_emotions[0]
-                    
-                    # Draw rectangle and emotion text
-                    cv2.rectangle(frame_rgb, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                    emotion_text = f"{self.current_emotion.capitalize()}: {int(self.emotion_confidence*100)}%"
-                    cv2.putText(frame_rgb, emotion_text, (x, y - 10),
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                
-                # Convert to PhotoImage
-                image = Image.fromarray(frame_rgb)
-                photo = ImageTk.PhotoImage(image=image)
-                
-                # Update canvas
-                self.webcam_canvas.create_image(0, 0, image=photo, anchor=tk.NW)
-                self.webcam_canvas.photo = photo
-            
-            # Schedule next update
-            self.root.after(10, self.update_webcam)
-
-    def detect_emotion(self, face_roi):
-        # Convert to grayscale
-        gray = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+        if not self.video_list[self.current_emotion]:
+            return
         
-        # Detect eyes
-        eyes = self.eye_cascade.detectMultiScale(gray, 1.3, 5)
+        video_path = self.video_list[self.current_emotion][self.current_video_index]
         
-        # Detect smile/mouth
-        smile = self.smile_cascade.detectMultiScale(gray, 1.3, 5)
+        # Create media
+        media = self.instance.media_new(video_path)
+        self.player.set_media(media)
         
-        # Initialize emotions with equal baseline
-        emotions = {
-            'happy': 0.2,
-            'sad': 0.2,
-            'angry': 0.2,
-            'surprise': 0.2,
-            'neutral': 0.2
-        }
+        # Set window ID based on platform
+        if platform.system() == "Windows":
+            self.player.set_hwnd(self.player_canvas.winfo_id())
+        else:
+            self.player.set_xwindow(self.player_canvas.winfo_id())
         
-        # Process mouth/smile detection
-        if len(smile) > 0:
-            largest_smile = max(smile, key=lambda x: x[2] * x[3])
-            x, y, w, h = largest_smile
-            mouth_ratio = w / h if h > 0 else 0
-            
-            if mouth_ratio > 2.0:
-                emotions['surprise'] = 0.9
-                emotions['neutral'] = 0.1
-            elif mouth_ratio > 1.5:
-                emotions['happy'] = 0.9
-                emotions['neutral'] = 0.1
-            elif mouth_ratio < 1.3:
-                emotions['sad'] = 0.9
-                emotions['neutral'] = 0.1
-            elif mouth_ratio < 1.1:
-                emotions['angry'] = 0.9
-                emotions['neutral'] = 0.1
-        
-        # Process eye detection
-        if len(eyes) > 0:
-            eye_areas = [w * h for (x, y, w, h) in eyes]
-            eye_positions = [(x + w/2, y + h/2) for (x, y, w, h) in eyes]
-            
-            if len(eyes) == 2:
-                eye_distance = abs(eye_positions[0][0] - eye_positions[1][0])
-                eye_height_diff = abs(eye_positions[0][1] - eye_positions[1][1])
-                eye_area_ratio = max(eye_areas) / min(eye_areas) if min(eye_areas) > 0 else 1
-                avg_eye_area = sum(eye_areas) / len(eye_areas)
-                
-                if avg_eye_area > 600:
-                    emotions['surprise'] = max(emotions['surprise'], 0.9)
-                    emotions['neutral'] = 0.1
-                elif avg_eye_area < 400 and eye_area_ratio > 1.2:
-                    emotions['angry'] = max(emotions['angry'], 0.9)
-                    emotions['neutral'] = 0.1
-                elif avg_eye_area < 350 and eye_height_diff > 6:
-                    emotions['sad'] = max(emotions['sad'], 0.9)
-                    emotions['neutral'] = 0.1
-                elif 350 < avg_eye_area < 600:
-                    emotions['happy'] = max(emotions['happy'], 0.9)
-                    emotions['neutral'] = 0.1
-        
-        # Re-normalize emotions
-        total = sum(emotions.values())
-        if total > 0:
-            emotions = {k: v/total for k, v in emotions.items()}
-        
-        return emotions
-
+        # Play video
+        self.player.play()
+        self.is_playing = True
+        self.show_success(f"Playing: {os.path.basename(video_path)}")
+    
     def toggle_play_pause(self):
-        """Toggle between play and pause"""
-        if self.player.is_playing():
+        """Toggle play/pause"""
+        if self.is_playing:
             self.player.pause()
-            self.play_pause_button.configure(text="⏯️ Play")
+            self.is_playing = False
         else:
             self.player.play()
-            self.play_pause_button.configure(text="⏯️ Pause")
-
-    def increase_volume(self):
-        """Increase volume by 10%"""
-        current_volume = self.player.audio_get_volume()
-        new_volume = min(current_volume + 10, 100)
-        self.player.audio_set_volume(new_volume)
-
-    def decrease_volume(self):
-        """Decrease volume by 10%"""
-        current_volume = self.player.audio_get_volume()
-        new_volume = max(current_volume - 10, 0)
-        self.player.audio_set_volume(new_volume)
-
+            self.is_playing = True
+    
+    def volume_up(self):
+        """Increase volume"""
+        self.volume = min(100, self.volume + 10)
+        self.player.audio_set_volume(self.volume)
+    
+    def volume_down(self):
+        """Decrease volume"""
+        self.volume = max(0, self.volume - 10)
+        self.player.audio_set_volume(self.volume)
+    
     def toggle_mute(self):
-        """Toggle mute state"""
-        is_muted = self.player.audio_get_mute()
-        self.player.audio_set_mute(not is_muted)
-        self.mute_button.configure(text="🔇 Unmute" if not is_muted else "🔇 Mute")
-
+        """Toggle mute"""
+        self.is_muted = not self.is_muted
+        self.player.audio_set_mute(self.is_muted)
+    
     def stop_video(self):
         """Stop video playback"""
         self.player.stop()
-        self.play_pause_button.configure(text="⏯️ Play")
+        self.is_playing = False
+    
+    def mouse_callback(self, event):
+        """Handle mouse clicks"""
+        # Check if click is within capture button bounds
+        button_x = self.capture_button.winfo_x()
+        button_y = self.capture_button.winfo_y()
+        button_width = self.capture_button.winfo_width()
+        button_height = self.capture_button.winfo_height()
+        
+        if (button_x <= event.x <= button_x + button_width and
+            button_y <= event.y <= button_y + button_height):
+            self.capture_and_play()
+    
+    def next_video(self):
+        """Play next video in the list"""
+        if not self.current_emotion or not self.video_list[self.current_emotion]:
+            self.show_error("No videos available")
+            return
+            
+        # Stop current video
+        self.player.stop()
+        
+        # Move to next video
+        self.current_video_index = (self.current_video_index + 1) % len(self.video_list[self.current_emotion])
+        
+        # Play new video
+        self.play_current_video()
+        self.show_success("Playing next video")
 
+    def prev_video(self):
+        """Play previous video in the list"""
+        if not self.current_emotion or not self.video_list[self.current_emotion]:
+            self.show_error("No videos available")
+            return
+            
+        # Stop current video
+        self.player.stop()
+        
+        # Move to previous video
+        self.current_video_index = (self.current_video_index - 1) % len(self.video_list[self.current_emotion])
+        
+        # Play new video
+        self.play_current_video()
+        self.show_success("Playing previous video")
+    
     def run(self):
-        """Start the application"""
+        """Run the application"""
         self.root.mainloop()
+    
+    def __del__(self):
+        """Cleanup"""
+        if hasattr(self, 'cap'):
+            self.cap.release()
+        if hasattr(self, 'player'):
+            self.player.stop()
 
 if __name__ == "__main__":
-    detector = FaceDetector()
-    detector.run() 
+    app = FaceEmotionDetection()
+    app.run() 
