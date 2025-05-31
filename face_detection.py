@@ -16,18 +16,27 @@ import platform
 
 class FaceEmotionDetection:
     def __init__(self):
-        # Initialize VLC instance with verbose logging
-        self.instance = vlc.Instance('--verbose 2')
+        # Create necessary directories
+        self.create_directories()
+        
+        # Initialize VLC instance with optimized settings for faster loading
+        self.instance = vlc.Instance('--verbose 2 --no-video-title-show --file-caching=100 --network-caching=100 --live-caching=100 --sout-mux-caching=100 --aout=directsound')
         self.player = self.instance.media_player_new()
+        self.player.set_rate(1.0)  # Normal playback speed
+        
+        # Set initial volume and audio settings
+        self.volume = 100
+        self.player.audio_set_volume(self.volume)
+        self.player.audio_set_mute(False)
+        
+        # Add loading timeout
+        self.loading_timeout = 5  # seconds
         
         # Create main window
         self.root = tk.Tk()
         self.root.title("Face Emotion Detection")
         self.root.geometry("1280x720")
         self.root.configure(bg='#1a1a1a')
-        
-        # Load CSS styles
-        self.load_styles()
         
         # Create main frame
         self.main_frame = tk.Frame(self.root, bg='#2d2d2d')
@@ -56,6 +65,25 @@ class FaceEmotionDetection:
         self.media_control_frame = tk.Frame(self.right_panel, bg='#2d2d2d')
         self.media_control_frame.pack(pady=10)
         
+        # Create fullscreen button frame
+        self.fullscreen_frame = tk.Frame(self.right_panel, bg='#2d2d2d')
+        self.fullscreen_frame.pack(pady=5)
+        
+        # Create fullscreen button
+        self.fullscreen_button = tk.Button(
+            self.fullscreen_frame,
+            text="⛶",  # Fullscreen symbol
+            command=self.toggle_fullscreen,
+            bg='#3498db',
+            fg='white',
+            relief=tk.FLAT,
+            width=3,
+            height=1,
+            font=('Arial', 12)
+        )
+        self.fullscreen_button.pack()
+        self.create_tooltip(self.fullscreen_button, "Toggle Fullscreen")
+        
         # Create buttons with tooltips
         self.create_control_buttons()
         self.create_media_buttons()
@@ -74,7 +102,6 @@ class FaceEmotionDetection:
         self.current_video_index = 0
         self.is_playing = False
         self.is_muted = False
-        self.volume = 100
         
         # Emotion detection variables
         self.emotion_buffer = []  # Buffer to store recent emotions
@@ -82,6 +109,12 @@ class FaceEmotionDetection:
         self.last_emotion_change = time.time()  # Time of last emotion change
         self.emotion_change_delay = 2.0  # Minimum seconds between emotion changes
         self.emotion_confidence = {}  # Store confidence for each emotion
+        
+        # Initialize video cache
+        self.video_cache = {}
+        self.current_media = None
+        self.preload_thread = None
+        self.is_preloading = False
         
         # Load emotion videos
         self.load_emotion_videos()
@@ -101,15 +134,61 @@ class FaceEmotionDetection:
         # Start webcam update
         self.update_webcam()
         
-    def load_styles(self):
-        """Load CSS styles from file"""
-        try:
-            with open('styles.css', 'r') as f:
-                self.styles = f.read()
-        except FileNotFoundError:
-            self.show_error("Error: styles.css file not found")
-            self.styles = ""
-    
+        # Initialize fullscreen state
+        self.is_fullscreen = False
+        self.original_geometry = None
+        self.original_player_geometry = None
+        
+    def create_directories(self):
+        """Create necessary directories for the application"""
+        # Create main songs directory
+        if not os.path.exists('songs'):
+            os.makedirs('songs')
+        
+        # Create emotion subdirectories
+        emotions = ['happy', 'sad', 'angry', 'neutral']
+        for emotion in emotions:
+            emotion_dir = os.path.join('songs', emotion)
+            if not os.path.exists(emotion_dir):
+                os.makedirs(emotion_dir)
+        
+        # Create a README file with instructions
+        readme_path = os.path.join('songs', 'README.txt')
+        if not os.path.exists(readme_path):
+            with open(readme_path, 'w') as f:
+                f.write("""Face Emotion Detection - Video Instructions
+
+1. Place your video files in the appropriate emotion folders:
+   - songs/happy/ - For happy emotion videos
+   - songs/sad/ - For sad emotion videos
+   - songs/angry/ - For angry emotion videos
+   - songs/neutral/ - For neutral emotion videos
+
+2. Supported video formats:
+   - .mp4 (recommended)
+   - .avi
+   - .mkv
+
+3. Video requirements:
+   - Must have both video and audio
+   - Should be properly encoded with H.264 video codec
+   - Audio should be in a common format (AAC, MP3)
+
+4. File naming:
+   - Use descriptive names
+   - Avoid special characters
+   - Keep file names short
+
+5. Troubleshooting:
+   - If videos don't play with sound, check:
+     * Video file format is supported
+     * Video has audio track
+     * System volume is not muted
+     * VLC media player is installed correctly
+
+Note: The application will automatically detect and play videos from these folders based on the detected emotion.
+""")
+
     def create_control_buttons(self):
         """Create control buttons with tooltips"""
         # Start Detection button
@@ -288,14 +367,12 @@ class FaceEmotionDetection:
         error_label = tk.Label(
             self.root,
             text=message,
-            fg='#e74c3c',
-            bg='rgba(231, 76, 60, 0.1)',
+            bg='#e74c3c',
+            fg='white',
             padx=10,
-            pady=5,
-            relief=tk.SOLID,
-            borderwidth=1
+            pady=5
         )
-        error_label.pack(pady=10)
+        error_label.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
         self.root.after(3000, error_label.destroy)
     
     def show_success(self, message):
@@ -303,41 +380,65 @@ class FaceEmotionDetection:
         success_label = tk.Label(
             self.root,
             text=message,
-            fg='#2ecc71',
-            bg='rgba(46, 204, 113, 0.1)',
+            bg='#2ecc71',
+            fg='white',
             padx=10,
-            pady=5,
-            relief=tk.SOLID,
-            borderwidth=1
+            pady=5
         )
-        success_label.pack(pady=10)
+        success_label.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
         self.root.after(3000, success_label.destroy)
     
+    def refresh_webcam(self):
+        """Refresh the webcam connection"""
+        if hasattr(self, 'cap'):
+            self.cap.release()
+        self.cap = cv2.VideoCapture(0)
+        if not self.cap.isOpened():
+            self.show_error("Error: Could not open webcam")
+            return False
+        return True
+
     def update_webcam(self):
-        """Update webcam feed"""
-        if self.cap.isOpened():
+        """Update webcam feed with error handling and refresh mechanism"""
+        try:
+            if not hasattr(self, 'cap') or not self.cap.isOpened():
+                if not self.refresh_webcam():
+                    self.root.after(1000, self.update_webcam)  # Try again after 1 second
+                    return
+
             ret, frame = self.cap.read()
-            if ret:
-                if self.is_detecting:
-                    # If detecting, let detect_emotion handle the frame display
-                    self.detect_emotion(frame)
-                else:
-                    # If not detecting, just display the frame
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    
-                    # Resize frame to fit canvas
-                    canvas_width = self.webcam_canvas.winfo_width()
-                    canvas_height = self.webcam_canvas.winfo_height()
-                    if canvas_width > 1 and canvas_height > 1:
-                        frame_rgb = cv2.resize(frame_rgb, (canvas_width, canvas_height))
-                    
-                    # Convert to PhotoImage
-                    self.photo = ImageTk.PhotoImage(image=Image.fromarray(frame_rgb))
-                    
-                    # Update canvas
-                    self.webcam_canvas.create_image(0, 0, image=self.photo, anchor=tk.NW)
-        
-        # Schedule next update
+            if not ret:
+                self.show_error("Error: Could not read from webcam")
+                if not self.refresh_webcam():
+                    self.root.after(1000, self.update_webcam)  # Try again after 1 second
+                    return
+
+            if self.is_detecting:
+                # If detecting, let detect_emotion handle the frame display
+                self.detect_emotion(frame)
+            else:
+                # If not detecting, just display the frame
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # Resize frame to fit canvas
+                canvas_width = self.webcam_canvas.winfo_width()
+                canvas_height = self.webcam_canvas.winfo_height()
+                if canvas_width > 1 and canvas_height > 1:
+                    frame_rgb = cv2.resize(frame_rgb, (canvas_width, canvas_height))
+                
+                # Convert to PhotoImage
+                self.photo = ImageTk.PhotoImage(image=Image.fromarray(frame_rgb))
+                
+                # Update canvas
+                self.webcam_canvas.create_image(0, 0, image=self.photo, anchor=tk.NW)
+
+        except Exception as e:
+            self.show_error(f"Webcam error: {str(e)}")
+            if not self.refresh_webcam():
+                self.root.after(1000, self.update_webcam)  # Try again after 1 second
+                return
+
+        # Schedule next update with a shorter delay for smoother video
         self.root.after(10, self.update_webcam)
     
     def detect_emotion(self, frame):
@@ -444,6 +545,8 @@ class FaceEmotionDetection:
     
     def start_detection(self):
         """Start face detection"""
+        if not self.refresh_webcam():  # Refresh webcam before starting detection
+            return
         self.is_detecting = True
         self.start_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.NORMAL)
@@ -458,19 +561,44 @@ class FaceEmotionDetection:
         self.capture_button.config(state=tk.DISABLED)
         self.status_label.config(text="Status: Stopped")
         self.emotion_label.config(text="Emotion: None")
-        self.show_success("Face detection stopped")
+        if self.refresh_webcam():  # Refresh webcam after stopping detection
+            self.show_success("Face detection stopped")
+    
+    def refresh_videos(self):
+        """Refresh the video list for all emotions"""
+        emotions = ['happy', 'sad', 'angry', 'neutral']
+        for emotion in emotions:
+            self.video_list[emotion] = self.get_video_list(emotion)
+            if not self.video_list[emotion]:
+                self.show_error(f"No videos found for {emotion} emotion")
     
     def capture_and_play(self):
         """Capture current emotion and play video"""
         if self.current_emotion:
-            self.play_emotion_video(self.current_emotion)
-            self.show_success(f"Playing {self.current_emotion} video")
+            # Refresh videos before playing
+            self.refresh_videos()
+            
+            # Check if we have videos for the current emotion
+            if self.current_emotion in self.video_list and self.video_list[self.current_emotion]:
+                self.play_emotion_video(self.current_emotion)
+                self.show_success(f"Playing {self.current_emotion} video")
+            else:
+                self.show_error(f"No videos available for {self.current_emotion} emotion")
+                # Try to load videos for other emotions
+                available_emotions = [e for e, v in self.video_list.items() if v]
+                if available_emotions:
+                    self.show_success(f"Available emotions: {', '.join(available_emotions)}")
+                else:
+                    self.show_error("No videos found in any emotion folder")
     
     def load_emotion_videos(self):
-        """Load videos for each emotion"""
+        """Load videos for each emotion and start preloading"""
         emotions = ['happy', 'sad', 'angry', 'neutral']
         for emotion in emotions:
             self.video_list[emotion] = self.get_video_list(emotion)
+        
+        # Start preloading all videos
+        self.preload_all_videos()
     
     def get_video_list(self, emotion):
         """Get list of videos for an emotion"""
@@ -479,8 +607,15 @@ class FaceEmotionDetection:
             os.makedirs(video_dir)
             return []
         
-        videos = [f for f in os.listdir(video_dir) if f.endswith(('.mp4', '.avi', '.mkv'))]
-        return [os.path.join(video_dir, v) for v in videos]
+        # Get supported video files
+        videos = []
+        for ext in ('.mp4', '.avi', '.mkv'):
+            videos.extend(glob.glob(os.path.join(video_dir, f'*{ext}')))
+        
+        if not videos:
+            self.show_error(f"No videos found in {emotion} folder. Please add some videos.")
+        
+        return videos
     
     def play_emotion_video(self, emotion):
         """Play a video for the given emotion"""
@@ -490,15 +625,77 @@ class FaceEmotionDetection:
         else:
             self.show_error(f"No videos found for {emotion} emotion")
     
+    def preload_video(self, video_path):
+        """Preload a video into memory with optimized settings"""
+        if video_path not in self.video_cache:
+            try:
+                # Create media with optimized options for faster loading
+                media = self.instance.media_new(video_path)
+                media.add_option('file-caching=100')
+                media.add_option('network-caching=100')
+                media.add_option('live-caching=100')
+                media.add_option('sout-mux-caching=100')
+                media.add_option('aout=directsound')
+                media.add_option('--no-audio-time-stretch')
+                media.add_option('--no-video-time-stretch')
+                
+                # Force media to load with timeout
+                start_time = time.time()
+                media.get_mrl()
+                if time.time() - start_time > self.loading_timeout:
+                    self.show_error("Video loading timeout - please try again")
+                    return None
+                    
+                self.video_cache[video_path] = media
+                return media
+            except Exception as e:
+                self.show_error(f"Error preloading video: {str(e)}")
+                return None
+        return self.video_cache[video_path]
+
+    def preload_all_videos(self):
+        """Preload all videos in background"""
+        if self.is_preloading:
+            return
+            
+        self.is_preloading = True
+        
+        def preload_task():
+            try:
+                for emotion in self.video_list:
+                    for video_path in self.video_list[emotion]:
+                        if video_path not in self.video_cache:
+                            self.preload_video(video_path)
+            finally:
+                self.is_preloading = False
+        
+        # Start preloading in a separate thread
+        self.preload_thread = threading.Thread(target=preload_task, daemon=True)
+        self.preload_thread.start()
+
     def play_current_video(self):
-        """Play the current video"""
+        """Play the current video with optimized loading"""
         if not self.video_list[self.current_emotion]:
             return
         
         video_path = self.video_list[self.current_emotion][self.current_video_index]
         
-        # Create media
-        media = self.instance.media_new(video_path)
+        # Show loading message
+        self.show_success("Loading video...")
+        
+        # Preload the video with timeout
+        start_time = time.time()
+        media = self.preload_video(video_path)
+        if not media:
+            self.show_error("Failed to load video")
+            return
+            
+        # Check if loading took too long
+        if time.time() - start_time > self.loading_timeout:
+            self.show_error("Video loading timeout - please try again")
+            return
+        
+        # Set media to player with optimized options
         self.player.set_media(media)
         
         # Set window ID based on platform
@@ -507,11 +704,24 @@ class FaceEmotionDetection:
         else:
             self.player.set_xwindow(self.player_canvas.winfo_id())
         
-        # Play video
+        # Set player options for faster start and better performance
+        self.player.set_rate(1.0)
+        self.player.audio_set_volume(self.volume)
+        self.player.audio_set_mute(False)
+        
+        # Set additional performance options
+        self.player.video_set_key_input(False)
+        self.player.video_set_mouse_input(False)
+        self.player.set_fullscreen(False)
+        
+        # Play video with optimized settings
         self.player.play()
         self.is_playing = True
         self.show_success(f"Playing: {os.path.basename(video_path)}")
-    
+        
+        # Start preloading all videos in background
+        self.preload_all_videos()
+
     def toggle_play_pause(self):
         """Toggle play/pause"""
         if self.is_playing:
@@ -525,16 +735,25 @@ class FaceEmotionDetection:
         """Increase volume"""
         self.volume = min(100, self.volume + 10)
         self.player.audio_set_volume(self.volume)
+        self.player.audio_set_mute(False)  # Ensure not muted when changing volume
+        self.show_success(f"Volume: {self.volume}%")
     
     def volume_down(self):
         """Decrease volume"""
         self.volume = max(0, self.volume - 10)
         self.player.audio_set_volume(self.volume)
+        self.player.audio_set_mute(False)  # Ensure not muted when changing volume
+        self.show_success(f"Volume: {self.volume}%")
     
     def toggle_mute(self):
         """Toggle mute"""
         self.is_muted = not self.is_muted
         self.player.audio_set_mute(self.is_muted)
+        if self.is_muted:
+            self.show_success("Audio muted")
+        else:
+            self.show_success("Audio unmuted")
+            self.player.audio_set_volume(self.volume)  # Restore volume when unmuting
     
     def stop_video(self):
         """Stop video playback"""
@@ -554,7 +773,7 @@ class FaceEmotionDetection:
             self.capture_and_play()
     
     def next_video(self):
-        """Play next video in the list"""
+        """Play next video in the list with optimized loading"""
         if not self.current_emotion or not self.video_list[self.current_emotion]:
             self.show_error("No videos available")
             return
@@ -570,7 +789,7 @@ class FaceEmotionDetection:
         self.show_success("Playing next video")
 
     def prev_video(self):
-        """Play previous video in the list"""
+        """Play previous video in the list with optimized loading"""
         if not self.current_emotion or not self.video_list[self.current_emotion]:
             self.show_error("No videos available")
             return
@@ -595,6 +814,60 @@ class FaceEmotionDetection:
             self.cap.release()
         if hasattr(self, 'player'):
             self.player.stop()
+        # Clear video cache
+        self.video_cache.clear()
+
+    def toggle_fullscreen(self):
+        """Toggle fullscreen mode for the video player"""
+        if not self.is_fullscreen:
+            # Store original geometry
+            self.original_geometry = self.root.geometry()
+            self.original_player_geometry = {
+                'width': self.player_canvas.winfo_width(),
+                'height': self.player_canvas.winfo_height(),
+                'x': self.player_canvas.winfo_x(),
+                'y': self.player_canvas.winfo_y()
+            }
+            
+            # Hide other elements
+            self.left_panel.pack_forget()
+            self.media_control_frame.pack_forget()
+            self.fullscreen_frame.pack_forget()
+            
+            # Expand player canvas
+            self.player_canvas.pack(fill=tk.BOTH, expand=True)
+            
+            # Update window size
+            self.root.geometry(f"{self.root.winfo_screenwidth()}x{self.root.winfo_screenheight()}")
+            
+            # Update player window
+            if platform.system() == "Windows":
+                self.player.set_hwnd(self.player_canvas.winfo_id())
+            else:
+                self.player.set_xwindow(self.player_canvas.winfo_id())
+            
+            self.is_fullscreen = True
+            self.fullscreen_button.config(text="⮽")  # Exit fullscreen symbol
+        else:
+            # Restore original layout
+            self.left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10)
+            self.media_control_frame.pack(pady=10)
+            self.fullscreen_frame.pack(pady=5)
+            
+            # Restore player canvas
+            self.player_canvas.pack(pady=10)
+            
+            # Restore window size
+            self.root.geometry(self.original_geometry)
+            
+            # Update player window
+            if platform.system() == "Windows":
+                self.player.set_hwnd(self.player_canvas.winfo_id())
+            else:
+                self.player.set_xwindow(self.player_canvas.winfo_id())
+            
+            self.is_fullscreen = False
+            self.fullscreen_button.config(text="⛶")  # Fullscreen symbol
 
 if __name__ == "__main__":
     app = FaceEmotionDetection()

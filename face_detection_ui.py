@@ -1,252 +1,228 @@
+import sys
+import cv2
+import numpy as np
 import tkinter as tk
 from tkinter import ttk
-import cv2
 from PIL import Image, ImageTk
-import threading
 from face_detection import FaceDetector
-import webbrowser
-
-class ModernButton(ttk.Button):
-    def __init__(self, master=None, **kwargs):
-        super().__init__(master, **kwargs)
-        self.configure(style='Modern.TButton')
-        self.bind('<Enter>', self.on_enter)
-        self.bind('<Leave>', self.on_leave)
-        self.original_style = self.cget('style')
-
-    def on_enter(self, e):
-        self.configure(background=self.master.master.hover_color)
-
-    def on_leave(self, e):
-        self.configure(background=self.master.master.button_color)
-
-class ModernLabelFrame(ttk.LabelFrame):
-    def __init__(self, master=None, **kwargs):
-        super().__init__(master, **kwargs)
-        self.configure(style='Modern.TLabelframe')
 
 class FaceDetectionUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Face Emotion Detection")
+        
+        # Set fixed window size
         self.root.geometry("1200x800")
-        
-        # Configure styles
-        self.style = ttk.Style()
-        self.style.theme_use('clam')  # Use clam theme as base
-        
-        # Configure colors
-        self.bg_color = "#1E1E1E"  # Dark background
-        self.accent_color = "#00BFFF"  # Deep Sky Blue
-        self.text_color = "#FFFFFF"  # White
-        self.button_color = "#2C3E50"  # Dark blue-gray
-        self.hover_color = "#3498DB"  # Bright blue
-        self.success_color = "#2ECC71"  # Emerald
-        self.warning_color = "#E74C3C"  # Red
-        
-        # Configure styles
-        self.style.configure('Modern.TButton',
-            background=self.button_color,
-            foreground=self.text_color,
-            font=('Segoe UI', 12, 'bold'),
-            padding=15,
-            borderwidth=0,
-            relief="flat")
-            
-        self.style.configure('Modern.TLabelframe',
-            background=self.bg_color,
-            foreground=self.text_color,
-            font=('Segoe UI', 12, 'bold'),
-            borderwidth=2,
-            relief="solid")
-        
-        self.style.configure('Modern.TLabelframe.Label',
-            background=self.bg_color,
-            foreground=self.text_color,
-            font=('Segoe UI', 12, 'bold'))
-        
-        self.style.configure('Modern.TLabel',
-            background=self.bg_color,
-            foreground=self.text_color,
-            font=('Segoe UI', 12))
-            
-        self.style.configure('Modern.TFrame',
-            background=self.bg_color)
-        
-        # Configure root window
-        self.root.configure(bg=self.bg_color)
+        self.root.resizable(False, False)
         
         # Initialize face detector
         self.detector = FaceDetector()
         self.is_running = False
         self.current_emotion = None
-        self.emotion_colors = {
-            'happy': '#FFD700',    # Gold
-            'sad': '#4169E1',      # Royal Blue
-            'angry': '#FF4500',    # Orange Red
-            'surprise': '#FFA500', # Orange
-            'neutral': '#FFFFFF'   # White
-        }
-
-        # Create main frame with padding
-        self.main_frame = ttk.Frame(self.root, style='Modern.TFrame')
-        self.main_frame.pack(fill=tk.BOTH, expand=True, padx=30, pady=30)
-
-        # Create left panel for video feed
-        self.video_frame = ModernLabelFrame(self.main_frame, text="Video Feed")
-        self.video_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=15, pady=15)
+        self.face_detection_confidence = 0.0
+        self.emotion_history = []
+        self.confidence_threshold = 0.5
         
-        self.video_label = ttk.Label(self.video_frame, style='Modern.TLabel')
-        self.video_label.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
-
-        # Create right panel for controls and info
-        self.control_frame = ModernLabelFrame(self.main_frame, text="Controls")
-        self.control_frame.pack(side=tk.RIGHT, fill=tk.BOTH, padx=15, pady=15)
-
-        # Add start/stop button with icon
-        self.start_button = ModernButton(
-            self.control_frame,
-            text="▶ Start Detection",
-            command=self.toggle_detection
-        )
-        self.start_button.pack(pady=15, padx=20, fill=tk.X)
-
-        # Add stop and play button with icon
-        self.stop_play_button = ModernButton(
-            self.control_frame,
-            text="⏹ Stop & Play Last Emotion",
-            command=self.stop_and_play,
-            state=tk.DISABLED
-        )
-        self.stop_play_button.pack(pady=15, padx=20, fill=tk.X)
-
-        # Add capture button with icon
-        self.capture_button = ModernButton(
-            self.control_frame,
-            text="📸 Capture & Play Song",
-            command=self.capture_and_play,
-            state=tk.DISABLED
-        )
-        self.capture_button.pack(pady=15, padx=20, fill=tk.X)
-
-        # Add emotion display with enhanced styling
-        self.emotion_frame = ModernLabelFrame(self.control_frame, text="Current Emotion")
-        self.emotion_frame.pack(fill=tk.X, padx=20, pady=15)
+        # Configure style
+        self.style = ttk.Style()
+        self.style.configure("Modern.TFrame", background="#1E1E1E")
+        self.style.configure("Modern.TButton",
+                           background="#2C3E50",
+                           foreground="white",
+                           font=("Arial", 12, "bold"),
+                           padding=10)
         
-        self.emotion_label = ttk.Label(
-            self.emotion_frame,
-            text="No emotion detected",
-            font=("Segoe UI", 28, "bold"),
-            style='Modern.TLabel'
-        )
-        self.emotion_label.pack(pady=20)
-
-        # Add emotion colors legend with enhanced styling
-        self.legend_frame = ModernLabelFrame(self.control_frame, text="Emotion Colors")
-        self.legend_frame.pack(fill=tk.X, padx=20, pady=15)
+        # Create main container
+        self.main_container = ttk.Frame(self.root, style="Modern.TFrame")
+        self.main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        emotion_emojis = {
-            'happy': '😊',
-            'sad': '😢',
-            'angry': '😠',
-            'surprise': '😲',
-            'neutral': '😐'
-        }
+        # Create left panel (Camera Feed)
+        self.left_panel = ttk.Frame(self.main_container, style="Modern.TFrame")
+        self.left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        for emotion, color in self.emotion_colors.items():
-            frame = ttk.Frame(self.legend_frame, style='Modern.TFrame')
-            frame.pack(fill=tk.X, pady=8)
+        # Camera feed frame
+        self.camera_frame = ttk.Frame(self.left_panel, style="Modern.TFrame")
+        self.camera_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Camera feed label
+        self.video_label = ttk.Label(self.camera_frame)
+        self.video_label.pack(fill=tk.BOTH, expand=True)
+        
+        # Create right panel (Controls and Emotion Levels)
+        self.right_panel = ttk.Frame(self.main_container, style="Modern.TFrame", width=360)
+        self.right_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=10)
+        
+        # Control buttons frame
+        self.control_frame = ttk.Frame(self.right_panel, style="Modern.TFrame")
+        self.control_frame.pack(fill=tk.X, pady=10)
+        
+        # Add control buttons
+        self.start_button = ttk.Button(self.control_frame, text="▶ Start",
+                                     command=self.toggle_detection,
+                                     style="Modern.TButton",
+                                     width=25)
+        self.start_button.pack(pady=5)
+        
+        self.stop_button = ttk.Button(self.control_frame, text="⏹ Stop",
+                                    command=self.stop_detection,
+                                    style="Modern.TButton",
+                                    width=25,
+                                    state=tk.DISABLED)
+        self.stop_button.pack(pady=5)
+        
+        self.capture_button = ttk.Button(self.control_frame, text="📸 Capture & Play",
+                                       command=self.capture_and_play,
+                                       style="Modern.TButton",
+                                       width=25,
+                                       state=tk.DISABLED)
+        self.capture_button.pack(pady=5)
+        
+        # Emotion levels frame
+        self.emotion_levels_frame = ttk.Frame(self.right_panel, style="Modern.TFrame")
+        self.emotion_levels_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        # Create emotion level indicators
+        self.emotion_levels = {}
+        emotions = ['happy', 'sad', 'angry', 'surprise', 'neutral']
+        
+        for emotion in emotions:
+            container = ttk.Frame(self.emotion_levels_frame, style="Modern.TFrame")
+            container.pack(fill=tk.X, pady=5)
             
-            emoji_label = ttk.Label(
-                frame,
-                text=emotion_emojis[emotion],
-                font=("Segoe UI", 24),
-                style='Modern.TLabel'
-            )
-            emoji_label.pack(side=tk.LEFT, padx=15)
+            # Emotion label
+            label = ttk.Label(container, text=emotion.capitalize(),
+                            foreground="white",
+                            font=("Arial", 12, "bold"))
+            label.pack(side=tk.LEFT, padx=5)
             
-            color_label = ttk.Label(
-                frame,
-                text="●",
-                foreground=color,
-                font=("Segoe UI", 24),
-                style='Modern.TLabel'
-            )
-            color_label.pack(side=tk.LEFT, padx=5)
+            # Level indicator
+            level = ttk.Label(container, width=30, background="#2C3E50")
+            level.pack(side=tk.RIGHT, padx=5)
             
-            emotion_label = ttk.Label(
-                frame,
-                text=emotion.capitalize(),
-                font=("Segoe UI", 14),
-                style='Modern.TLabel'
-            )
-            emotion_label.pack(side=tk.LEFT)
-
-        # Add status bar with modern style
-        self.status_var = tk.StringVar()
-        self.status_var.set("Ready")
-        self.status_bar = ttk.Label(
-            self.root,
-            textvariable=self.status_var,
-            relief=tk.SUNKEN,
-            anchor=tk.W,
-            style='Modern.TLabel',
-            padding=(10, 5)
-        )
-        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+            self.emotion_levels[emotion] = level
+        
+        # Set up video update
+        self.update_frame()
 
     def toggle_detection(self):
         if not self.is_running:
-            # Check if camera is opened
             if not self.detector.cap.isOpened():
-                self.status_var.set("Error: Could not open webcam. Is it in use by another app?")
                 return
             self.is_running = True
-            self.start_button.configure(text="Stop Detection")
-            self.stop_play_button.configure(state=tk.NORMAL)
+            self.start_button.configure(state=tk.DISABLED)
+            self.stop_button.configure(state=tk.NORMAL)
             self.capture_button.configure(state=tk.NORMAL)
-            self.status_var.set("Detection running...")
-            self.start_detection()
         else:
-            self.is_running = False
-            self.start_button.configure(text="Start Detection")
-            self.stop_play_button.configure(state=tk.DISABLED)
-            self.capture_button.configure(state=tk.DISABLED)
-            self.status_var.set("Detection stopped")
+            self.stop_detection()
 
-    def start_detection(self):
-        def update_frame():
-            if not self.is_running:
-                return
+    def stop_detection(self):
+        self.is_running = False
+        self.start_button.configure(state=tk.NORMAL)
+        self.stop_button.configure(state=tk.DISABLED)
+        self.capture_button.configure(state=tk.DISABLED)
+        self.current_emotion = None
 
-            ret, frame = self.detector.cap.read()
-            if ret:
+    def process_emotion(self, emotions):
+        top_emotion = max(emotions.items(), key=lambda x: x[1])
+        emotion, confidence = top_emotion
+        
+        self.emotion_history.append((emotion, confidence))
+        if len(self.emotion_history) > 5:
+            self.emotion_history.pop(0)
+        
+        avg_confidence = sum(c for e, c in self.emotion_history if e == emotion) / len([e for e, c in self.emotion_history if e == emotion])
+        
+        if avg_confidence >= self.confidence_threshold:
+            self.current_emotion = emotion
+            self.face_detection_confidence = avg_confidence
+            return True
+        return False
+
+    def update_emotion_levels(self, emotions):
+        for emotion, confidence in emotions.items():
+            level = int(confidence * 100)
+            color = f"#{int(39 * (1 - confidence)):02x}{int(174 * confidence):02x}{int(96 * confidence):02x}"
+            self.emotion_levels[emotion].configure(background=color)
+
+    def update_frame(self):
+        if self.is_running:
+            try:
+                ret, frame = self.detector.cap.read()
+                if not ret:
+                    self.stop_detection()
+                    return
+
+                # Resize frame for better performance
+                frame = cv2.resize(frame, (640, 480))
+                
                 # Convert frame to RGB
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 
                 # Detect faces and emotions
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                faces = self.detector.face_cascade.detectMultiScale(gray, 1.3, 5)
+                faces = self.detector.face_cascade.detectMultiScale(
+                    gray,
+                    scaleFactor=1.1,
+                    minNeighbors=5,
+                    minSize=(30, 30)
+                )
 
-                for (x, y, w, h) in faces:
+                if len(faces) > 0:
+                    face = max(faces, key=lambda x: x[2] * x[3])
+                    x, y, w, h = face
+                    
+                    # Add padding to face region
+                    padding = int(min(w, h) * 0.1)
+                    x1 = max(0, x - padding)
+                    y1 = max(0, y - padding)
+                    x2 = min(frame.shape[1], x + w + padding)
+                    y2 = min(frame.shape[0], y + h + padding)
+                    
                     # Draw rectangle around face
-                    cv2.rectangle(frame_rgb, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                    cv2.rectangle(frame_rgb, (x1, y1), (x2, y2), (0, 255, 0), 2)
                     
                     # Extract face ROI for emotion detection
-                    face_roi = frame[y:y+h, x:x+w]
+                    face_roi = frame[y1:y2, x1:x2]
                     
-                    # Detect emotions
-                    emotions = self.detector.detect_emotion(face_roi)
-                    
-                    # Get top emotion
-                    top_emotion = max(emotions.items(), key=lambda x: x[1])
-                    self.current_emotion = top_emotion[0]
-                    
-                    # Update emotion label
-                    self.emotion_label.configure(
-                        text=f"{self.current_emotion.capitalize()}\n{int(top_emotion[1]*100)}%",
-                        foreground=self.emotion_colors.get(self.current_emotion, 'black')
-                    )
+                    if face_roi.size > 0:
+                        face_roi = cv2.resize(face_roi, (48, 48))
+                        emotions = self.detector.detect_emotion(face_roi)
+                        self.update_emotion_levels(emotions)
+                        
+                        if self.process_emotion(emotions):
+                            self.current_emotion = max(emotions.items(), key=lambda x: x[1])[0]
+                            # Add emotion text above the face
+                            emotion_text = f"Emotion: {self.current_emotion.capitalize()}"
+                            confidence_text = f"Confidence: {self.face_detection_confidence:.2f}"
+                            
+                            # Calculate text position
+                            text_y = max(y1 - 10, 30)
+                            
+                            # Add background rectangle for better visibility
+                            text_size = cv2.getTextSize(emotion_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+                            cv2.rectangle(frame_rgb, 
+                                        (x1, text_y - text_size[1] - 10),
+                                        (x1 + text_size[0], text_y + 5),
+                                        (0, 0, 0),
+                                        -1)
+                            
+                            # Add emotion text
+                            cv2.putText(frame_rgb,
+                                      emotion_text,
+                                      (x1, text_y),
+                                      cv2.FONT_HERSHEY_SIMPLEX,
+                                      0.7,
+                                      (0, 255, 0),
+                                      2)
+                            
+                            # Add confidence text
+                            cv2.putText(frame_rgb,
+                                      confidence_text,
+                                      (x1, text_y + 25),
+                                      cv2.FONT_HERSHEY_SIMPLEX,
+                                      0.7,
+                                      (0, 255, 0),
+                                      2)
 
                 # Convert frame to PhotoImage
                 image = Image.fromarray(frame_rgb)
@@ -254,41 +230,36 @@ class FaceDetectionUI:
                 
                 # Update video label
                 self.video_label.configure(image=photo)
-                self.video_label.image = photo
+                self.video_label.image = photo  # Keep a reference
 
-            # Schedule next update
-            self.root.after(10, update_frame)
-
-        # Start detection in a separate thread
-        threading.Thread(target=update_frame, daemon=True).start()
+            except Exception as e:
+                print(f"Error: {str(e)}")
+                self.stop_detection()
+        
+        # Schedule next update
+        self.root.after(30, self.update_frame)
 
     def capture_and_play(self):
-        if self.current_emotion:
-            song_url = self.detector.emotion_songs.get(self.current_emotion)
-            if song_url:
-                self.status_var.set(f"Opening song for {self.current_emotion} emotion...")
-                webbrowser.open(song_url)
+        if self.current_emotion and self.face_detection_confidence >= self.confidence_threshold:
+            youtube_url = self.get_youtube_url_for_emotion(self.current_emotion)
+            if youtube_url:
+                # Open YouTube URL in default web browser
+                import webbrowser
+                webbrowser.open(youtube_url)
             else:
-                self.status_var.set("No song found for this emotion")
+                self.current_emotion = None
         else:
-            self.status_var.set("No emotion detected")
+            self.current_emotion = None
 
-    def stop_and_play(self):
-        if self.current_emotion:
-            self.is_running = False
-            self.start_button.configure(text="Start Detection")
-            self.stop_play_button.configure(state=tk.DISABLED)
-            self.capture_button.configure(state=tk.DISABLED)
-            self.status_var.set(f"Playing song for last detected emotion: {self.current_emotion}")
-            
-            # Play the song for the last detected emotion
-            song_url = self.detector.emotion_songs.get(self.current_emotion)
-            if song_url:
-                webbrowser.open(song_url)
-            else:
-                self.status_var.set("No song found for this emotion")
-        else:
-            self.status_var.set("No emotion was detected before stopping")
+    def get_youtube_url_for_emotion(self, emotion):
+        emotion_urls = {
+            'happy': 'https://www.youtube.com/watch?v=uQnfRdmSXl0',
+            'sad': 'https://www.youtube.com/watch?v=V8Yv8F6KiG0',
+            'angry': 'https://www.youtube.com/watch?v=AAUv3HEaHq8',
+            'surprise': 'https://www.youtube.com/watch?v=VzppuKWR-5U',
+            'neutral': 'https://www.youtube.com/watch?v=TKeU1bLlAcc'
+        }
+        return emotion_urls.get(emotion)
 
 def main():
     root = tk.Tk()
